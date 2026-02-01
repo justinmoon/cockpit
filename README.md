@@ -16,10 +16,9 @@ cockpit
 - `COCKPIT_REPO_URL`: repo URL to clone into `/workspace` (default: current dir `origin` remote)
 - `COCKPIT_BRANCH`: branch to checkout (default: `master`)
 - `COCKPIT_SPRITE_ORG`: Fly org name (optional)
-- `COCKPIT_NODE_VERSION`: Node version to install in the Sprite (default: `20.11.1`)
 
 ## Notes
 
-- `~/.pi` is copied to `/root/.pi` in the Sprite (best-effort).
-- The Sprite is destroyed when `pi` exits or on Ctrl+C.
-
+- `~/.pi` is copied to `$HOME/.pi` in the Sprite (best-effort), excluding `.pi/agent/bin` (host-specific binaries).
+- If `COCKPIT_REPO_URL` is an SSH URL (e.g. `git@...`), `~/.ssh` is copied into the Sprite (best-effort).
+- The Sprite is destroyed when you exit the shell (or on Ctrl+C).

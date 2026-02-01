@@ -350,6 +350,8 @@ async function attachToSprite(
   remoteWorkDir: string,
   dryRun: boolean,
 ) {
+  const cockpitGitSshCommand =
+    'ssh -i "$HOME/.ssh/cockpit_github_ed25519" -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new';
   const shellArgs = [
     ...spriteScopedArgs(spriteName, org),
     "exec",
@@ -358,7 +360,7 @@ async function attachToSprite(
     remoteWorkDir,
     "/bin/sh",
     "-c",
-    'export PATH="$(npm prefix -g)/bin:$PATH"; if command -v bash >/dev/null 2>&1; then exec bash -l; fi; exec sh',
+    `if [ -f "$HOME/.ssh/cockpit_github_ed25519" ]; then export GIT_SSH_COMMAND='${cockpitGitSshCommand.replaceAll("'", "'\\''")}'; fi; export PATH="$(npm prefix -g)/bin:$PATH"; if command -v bash >/dev/null 2>&1; then exec bash -l; fi; exec sh`,
   ];
   
   if (dryRun) {
@@ -404,6 +406,23 @@ async function cmdAttach(dryRun: boolean) {
 
   const remoteHome = await getRemoteHome(spriteCmd, spriteName, org, dryRun);
   const remoteWorkDir = `${remoteHome}/workspace`;
+
+  const managed = await isCockpitManagedGithubKey();
+  if (managed) {
+    await runOk(
+      spriteCmd,
+      [
+        ...spriteScopedArgs(spriteName, org),
+        "exec",
+        "-file",
+        `${COCKPIT_GITHUB_KEY_PATH}:/tmp/cockpit_github_ed25519`,
+        "/bin/sh",
+        "-c",
+        `mkdir -p ~/.ssh && chmod 700 ~/.ssh && mv /tmp/cockpit_github_ed25519 ~/.ssh/cockpit_github_ed25519 && chmod 600 ~/.ssh/cockpit_github_ed25519`,
+      ],
+      { stdio: "inherit", dryRun },
+    );
+  }
 
   // eslint-disable-next-line no-console
   console.log(`Attaching to Sprite: ${spriteName}`);

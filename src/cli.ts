@@ -31,18 +31,26 @@ async function getTmuxWindowSprite(): Promise<string | null> {
   return value || null;
 }
 
-async function setTmuxWindowSprite(spriteName: string): Promise<void> {
+async function setTmuxWindowSprite(spriteName: string, dryRun: boolean): Promise<void> {
   if (!isInTmux()) return;
-  await spawnPromise("tmux", ["set-option", "-w", "@cockpit_sprite", spriteName], {
+  const res = await spawnPromise("tmux", ["set-option", "-w", "@cockpit_sprite", spriteName], {
     stdio: "inherit",
+    dryRun,
   });
+  if (res.code !== 0) {
+    throw new Error(`tmux set-option failed (${res.code})`);
+  }
 }
 
-async function clearTmuxWindowSprite(): Promise<void> {
+async function clearTmuxWindowSprite(dryRun: boolean): Promise<void> {
   if (!isInTmux()) return;
-  await spawnPromise("tmux", ["set-option", "-wu", "@cockpit_sprite"], {
+  const res = await spawnPromise("tmux", ["set-option", "-wu", "@cockpit_sprite"], {
     stdio: "inherit",
+    dryRun,
   });
+  if (res.code !== 0) {
+    throw new Error(`tmux set-option -u failed (${res.code})`);
+  }
 }
 
 async function warnIfDistLooksStale() {
@@ -59,6 +67,10 @@ async function warnIfDistLooksStale() {
     // ignore (likely running from installed package without src/)
   }
 }
+
+const COCKPIT_GITHUB_KEY_PATH = path.join(os.homedir(), ".ssh", "cockpit_github_ed25519");
+const COCKPIT_GITHUB_KEY_PUB_PATH = `${COCKPIT_GITHUB_KEY_PATH}.pub`;
+const COCKPIT_GITHUB_KEY_COMMENT_PREFIX = "cockpit:sprite-github:";
 
 function parseArgs(argv: string[]) {
   const flags = new Set(argv.filter((a) => a.startsWith("-")));
@@ -87,6 +99,13 @@ function sanitizeName(name: string) {
     .replace(/[^a-z0-9-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 50);
+}
+
+function parseAuthorizedKeyLine(line: string): { type: string; key: string; comment: string } {
+  const parts = line.trim().split(/\s+/);
+  if (parts.length < 2) throw new Error("Invalid public key format");
+  const [type, key, ...rest] = parts;
+  return { type, key, comment: rest.join(" ") };
 }
 
 async function pathExists(p: string) {
@@ -179,6 +198,27 @@ function spriteScopedArgs(spriteName: string, org?: string) {
   return [...spriteArgsBase(org), "-s", spriteName];
 }
 
+type SpriteExistence = "yes" | "no" | "unknown";
+
+async function probeSpriteExistence(
+  spriteCmd: string,
+  spriteName: string,
+  org: string | undefined,
+  dryRun: boolean,
+): Promise<{ existence: SpriteExistence; detail: string }> {
+  if (dryRun) return { existence: "yes", detail: "" };
+  const res = await spawnPromise(spriteCmd, [...spriteScopedArgs(spriteName, org), "exec", "/bin/sh", "-c", "true"], {
+    stdio: "pipe",
+  });
+  if (res.code === 0) return { existence: "yes", detail: "" };
+  const detail = (res.stdout + res.stderr).trim();
+  const lower = detail.toLowerCase();
+  if (lower.includes("sprite not found") || lower.includes("no such sprite")) {
+    return { existence: "no", detail };
+  }
+  return { existence: "unknown", detail };
+}
+
 function remoteBootstrapScript() {
   // Sprite already includes node/npm. Keep setup minimal.
   // Key gotcha: `npm install -g` installs into `$(npm prefix -g)/bin`, which is NOT on PATH by default.
@@ -211,16 +251,17 @@ pi --version
 `;
 }
 
-function remoteCloneScript(repoUrl: string, branch: string, remoteWorkDir: string) {
+function remoteCloneScript(repoUrl: string, branch: string, remoteWorkDir: string, gitSshCommand: string) {
   const repo = repoUrl.replaceAll("'", "'\\''");
   const b = branch.replaceAll("'", "'\\''");
   const dir = remoteWorkDir.replaceAll("'", "'\\''");
   const parent = path.posix.dirname(remoteWorkDir).replaceAll("'", "'\\''");
+  const sshCmd = gitSshCommand.replaceAll("'", "'\\''");
   return String.raw`
 set -eu
 
-if command -v ssh >/dev/null 2>&1; then
-  export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+if [ -n '${sshCmd}' ]; then
+  export GIT_SSH_COMMAND='${sshCmd}'
 fi
 
 rm -rf '${dir}'
@@ -302,9 +343,13 @@ async function uploadAndExtractTarball(
   );
 }
 
-async function attachToSprite(spriteName: string, spriteCmd: string, org: string | undefined, dryRun: boolean) {
-  const remoteWorkDir = "/home/sprite/workspace";
-  
+async function attachToSprite(
+  spriteName: string,
+  spriteCmd: string,
+  org: string | undefined,
+  remoteWorkDir: string,
+  dryRun: boolean,
+) {
   const shellArgs = [
     ...spriteScopedArgs(spriteName, org),
     "exec",
@@ -344,9 +389,112 @@ async function cmdAttach(dryRun: boolean) {
   const org = process.env.COCKPIT_SPRITE_ORG;
   const spriteCmd = process.env.SPRITE_BIN?.trim() || "sprite";
 
+  const probe = await probeSpriteExistence(spriteCmd, spriteName, org, dryRun);
+  if (probe.existence === "no") {
+    await clearTmuxWindowSprite(dryRun);
+    throw new Error(
+      `Sprite "${spriteName}" bound to this tmux window was not found.\n` +
+        "The binding was cleared. Run `cockpit` to create a new one.",
+    );
+  }
+  if (probe.existence === "unknown") {
+    const suffix = probe.detail ? `\n\n${probe.detail}` : "";
+    throw new Error(`Failed to verify Sprite "${spriteName}". Try again.${suffix}`);
+  }
+
+  const remoteHome = await getRemoteHome(spriteCmd, spriteName, org, dryRun);
+  const remoteWorkDir = `${remoteHome}/workspace`;
+
   // eslint-disable-next-line no-console
   console.log(`Attaching to Sprite: ${spriteName}`);
-  await attachToSprite(spriteName, spriteCmd, org, dryRun);
+  await attachToSprite(spriteName, spriteCmd, org, remoteWorkDir, dryRun);
+}
+
+async function ensureSshDir() {
+  const sshDir = path.join(os.homedir(), ".ssh");
+  await fs.mkdir(sshDir, { recursive: true });
+  await fs.chmod(sshDir, 0o700);
+}
+
+async function isCockpitManagedGithubKey(): Promise<boolean> {
+  if (!(await pathExists(COCKPIT_GITHUB_KEY_PATH))) return false;
+  if (!(await pathExists(COCKPIT_GITHUB_KEY_PUB_PATH))) return false;
+
+  const pubLine = (await fs.readFile(COCKPIT_GITHUB_KEY_PUB_PATH, "utf-8")).trim();
+  const pub = parseAuthorizedKeyLine(pubLine);
+  if (!pub.comment.startsWith(COCKPIT_GITHUB_KEY_COMMENT_PREFIX)) return false;
+
+  const derived = await spawnPromise("ssh-keygen", ["-y", "-f", COCKPIT_GITHUB_KEY_PATH], { stdio: "pipe" });
+  if (derived.code !== 0) return false;
+  const derivedPub = parseAuthorizedKeyLine(derived.stdout.trim());
+
+  return pub.type === derivedPub.type && pub.key === derivedPub.key;
+}
+
+async function maybeAddKeyToGithubViaGh(pubKeyPath: string) {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return;
+
+  const gh = await spawnPromise("gh", ["--version"], { stdio: "ignore" });
+  if (gh.code !== 0) return;
+
+  const auth = await spawnPromise("gh", ["auth", "status", "-h", "github.com"], { stdio: "ignore" });
+  if (auth.code !== 0) return;
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = (await rl.question("Add this key to GitHub now via `gh`? (y/N): ")).trim().toLowerCase();
+    if (answer !== "y" && answer !== "yes") return;
+  } finally {
+    rl.close();
+  }
+
+  const title = `cockpit sprite ${os.hostname()} ${nowStamp()}`;
+  await runOk("gh", ["ssh-key", "add", pubKeyPath, "--title", title], { stdio: "inherit" });
+}
+
+async function cmdInit() {
+  await ensureSshDir();
+
+  const keyPath = COCKPIT_GITHUB_KEY_PATH;
+  const pubKeyPath = COCKPIT_GITHUB_KEY_PUB_PATH;
+
+  if (await pathExists(keyPath)) {
+    const managed = await isCockpitManagedGithubKey();
+    if (!managed) {
+      throw new Error(
+        `Refusing to use existing key at ${keyPath} because it does not look like a cockpit-managed key.\n` +
+          `Move it aside (and its .pub), then run \`cockpit init\` again.`,
+      );
+    }
+    // eslint-disable-next-line no-console
+    console.log(`Cockpit GitHub SSH key already exists: ${keyPath}`);
+  } else {
+    // eslint-disable-next-line no-console
+    console.log(`Generating SSH key: ${keyPath}`);
+    const comment = `${COCKPIT_GITHUB_KEY_COMMENT_PREFIX}${os.hostname()}:${os.userInfo().username}:${nowStamp()}`;
+    await runOk("ssh-keygen", ["-t", "ed25519", "-f", keyPath, "-N", "", "-C", comment], {
+      stdio: "inherit",
+    });
+    await fs.chmod(keyPath, 0o600);
+    await fs.chmod(pubKeyPath, 0o644);
+  }
+
+  const pubKey = (await fs.readFile(pubKeyPath, "utf-8")).trim();
+
+  // eslint-disable-next-line no-console
+  console.log("");
+  // eslint-disable-next-line no-console
+  console.log("Add this public key to your GitHub account:");
+  // eslint-disable-next-line no-console
+  console.log("  https://github.com/settings/ssh/new");
+  // eslint-disable-next-line no-console
+  console.log("");
+  // eslint-disable-next-line no-console
+  console.log(pubKey);
+  // eslint-disable-next-line no-console
+  console.log("");
+
+  await maybeAddKeyToGithubViaGh(pubKeyPath);
 }
 
 async function cmdDestroy(dryRun: boolean) {
@@ -370,7 +518,12 @@ async function cmdDestroy(dryRun: boolean) {
     allowFailure: true,
   });
 
-  await clearTmuxWindowSprite();
+  try {
+    await clearTmuxWindowSprite(dryRun);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.log(err instanceof Error ? err.message : String(err));
+  }
   // eslint-disable-next-line no-console
   console.log("Sprite destroyed and tmux window unbound.");
 }
@@ -384,10 +537,26 @@ async function cmdCreate(dryRun: boolean, qa: boolean, qaTurn: boolean) {
   if (isInTmux()) {
     const existingSprite = await getTmuxWindowSprite();
     if (existingSprite) {
-      throw new Error(
-        `This tmux window already has Sprite "${existingSprite}".\n` +
-        `Use \`cockpit attach\` to connect, or \`cockpit destroy\` first.`
-      );
+      const probe = await probeSpriteExistence(spriteCmd, existingSprite, org, dryRun);
+      if (probe.existence === "no") {
+        // eslint-disable-next-line no-console
+        console.log(
+          `Found stale tmux window binding to Sprite "${existingSprite}". Clearing and continuing.`,
+        );
+        await clearTmuxWindowSprite(dryRun);
+      } else if (probe.existence === "unknown") {
+        const suffix = probe.detail ? `\n\n${probe.detail}` : "";
+        throw new Error(
+          `This tmux window already has Sprite "${existingSprite}" bound, but it could not be verified.\n` +
+            "Use `cockpit attach` to connect, or `cockpit destroy` to clear it." +
+            suffix,
+        );
+      } else {
+        throw new Error(
+          `This tmux window already has Sprite "${existingSprite}".\n` +
+            `Use \`cockpit attach\` to connect, or \`cockpit destroy\` first.`,
+        );
+      }
     }
   }
 
@@ -432,37 +601,37 @@ async function cmdCreate(dryRun: boolean, qa: boolean, qaTurn: boolean) {
     }
   }
 
-  // If in tmux, bind this Sprite to the window
-  if (isInTmux()) {
-    await setTmuxWindowSprite(spriteName);
-    // eslint-disable-next-line no-console
-    console.log(`Bound Sprite "${spriteName}" to this tmux window.`);
-  }
+  const inTmux = isInTmux();
+  let spriteReady = false;
+  let tmuxBound = false;
 
-  // For QA modes and non-tmux, we still auto-cleanup on exit
-  const shouldAutoCleanup = qa || qaTurn || !isInTmux();
-  
   let cleaningUp = false;
 
   const cleanup = async () => {
     if (cleaningUp) return;
     cleaningUp = true;
-    if (shouldAutoCleanup) {
+    const shouldDestroy = !spriteReady || qa || qaTurn || !inTmux;
+    if (shouldDestroy) {
       await runOk(spriteCmd, [...spriteScopedArgs(spriteName, org), "destroy", "-force"], {
         stdio: "inherit",
         dryRun,
         allowFailure: true,
       });
-      if (isInTmux()) {
-        await clearTmuxWindowSprite();
+      if (tmuxBound) {
+        try {
+          await clearTmuxWindowSprite(dryRun);
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.log(err instanceof Error ? err.message : String(err));
+        }
       }
     }
   };
 
-  const handleSignal = (_sig: NodeJS.Signals) => {
+  const handleSignal = (sig: NodeJS.Signals) => {
     void (async () => {
       await cleanup();
-      process.exit(130); // 128 + SIGINT
+      process.exit(sig === "SIGTERM" ? 143 : 130);
     })();
   };
 
@@ -473,31 +642,34 @@ async function cmdCreate(dryRun: boolean, qa: boolean, qaTurn: boolean) {
     const remoteHome = await getRemoteHome(spriteCmd, spriteName, org, dryRun);
     const remoteWorkDir = `${remoteHome}/workspace`;
 
-    // If repo uses SSH, upload ~/.ssh so git can authenticate.
+    let gitSshCommand = "";
     if (repoNeedsSsh(repoUrl)) {
-      const hostSshDir = path.join(os.homedir(), ".ssh");
-      if (await pathExists(hostSshDir)) {
-        const sshTar = await tarDirectoryWithExcludes(hostSshDir, [".ssh/*.sock", ".ssh/**/ControlMaster*"], dryRun);
-        try {
-          await uploadAndExtractTarball(spriteCmd, spriteName, org, sshTar, "/tmp/host-ssh.tar.gz", dryRun);
-          await runOk(
-            spriteCmd,
-            [
-              ...spriteScopedArgs(spriteName, org),
-              "exec",
-              "/bin/sh",
-              "-c",
-              'if [ -d "${HOME:-/home/sprite}/.ssh" ]; then chmod 700 "${HOME:-/home/sprite}/.ssh" || true; find "${HOME:-/home/sprite}/.ssh" -type d -exec chmod 700 {} \\; 2>/dev/null || true; find "${HOME:-/home/sprite}/.ssh" -type f -exec chmod 600 {} \\; 2>/dev/null || true; fi',
-            ],
-            { stdio: "inherit", dryRun },
-          );
-        } finally {
-          if (!dryRun) await fs.rm(sshTar, { force: true });
-        }
-      } else {
-        // eslint-disable-next-line no-console
-        console.log(`Note: ${hostSshDir} not found; SSH clone may fail.`);
+      const managed = await isCockpitManagedGithubKey();
+      if (!managed) {
+        throw new Error(
+          `Missing cockpit GitHub SSH key at ${COCKPIT_GITHUB_KEY_PATH}.\n` +
+            "Run `cockpit init` and add the public key to GitHub.",
+        );
       }
+
+      gitSshCommand =
+        "ssh -i ~/.ssh/cockpit_github_ed25519 -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new";
+
+      await runOk(
+        spriteCmd,
+        [
+          ...spriteScopedArgs(spriteName, org),
+          "exec",
+          "-file",
+          `${COCKPIT_GITHUB_KEY_PATH}:/tmp/cockpit_github_ed25519`,
+          "/bin/sh",
+          "-c",
+          `mkdir -p ~/.ssh && chmod 700 ~/.ssh && mv /tmp/cockpit_github_ed25519 ~/.ssh/cockpit_github_ed25519 && chmod 600 ~/.ssh/cockpit_github_ed25519`,
+        ],
+        { stdio: "inherit", dryRun },
+      );
+      // eslint-disable-next-line no-console
+      console.log(`Uploaded cockpit GitHub SSH key: ${COCKPIT_GITHUB_KEY_PATH}`);
     }
 
     // Bootstrap tools + pi.
@@ -521,7 +693,7 @@ async function cmdCreate(dryRun: boolean, qa: boolean, qaTurn: boolean) {
         "exec",
         "/bin/sh",
         "-c",
-        remoteCloneScript(repoUrl, branch, remoteWorkDir),
+        remoteCloneScript(repoUrl, branch, remoteWorkDir, gitSshCommand),
       ],
       { stdio: "inherit", dryRun },
     );
@@ -555,6 +727,8 @@ async function cmdCreate(dryRun: boolean, qa: boolean, qaTurn: boolean) {
       ],
       { stdio: "inherit", dryRun },
     );
+
+    spriteReady = true;
 
     if (qaTurn) {
       const qaTurnScript = `
@@ -601,8 +775,16 @@ echo "QA TURN OK"
       return;
     }
 
+    // In tmux, bind this Sprite to the window once it is ready.
+    if (inTmux) {
+      await setTmuxWindowSprite(spriteName, dryRun);
+      tmuxBound = true;
+      // eslint-disable-next-line no-console
+      console.log(`Bound Sprite "${spriteName}" to this tmux window.`);
+    }
+
     // Drop into a shell in a TTY inside the sprite.
-    await attachToSprite(spriteName, spriteCmd, org, dryRun);
+    await attachToSprite(spriteName, spriteCmd, org, remoteWorkDir, dryRun);
   } finally {
     await cleanup();
   }
@@ -622,6 +804,7 @@ async function main() {
         "  cockpit              Create a new Sprite and attach (claims tmux window)",
         "  cockpit attach       Attach to this tmux window's Sprite",
         "  cockpit destroy      Destroy this tmux window's Sprite",
+        "  cockpit init         Generate ~/.ssh/cockpit_github_ed25519 and show GitHub setup",
         "",
         "Env:",
         "  COCKPIT_REPO_URL     Repo URL to clone (default: current dir origin remote)",
@@ -653,6 +836,9 @@ async function main() {
   const qaTurn = args.qaTurn || process.env.COCKPIT_QA_TURN === "1";
 
   switch (args.subcommand) {
+    case "init":
+      await cmdInit();
+      break;
     case "attach":
       await cmdAttach(dryRun);
       break;

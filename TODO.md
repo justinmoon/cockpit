@@ -1,0 +1,1 @@
+- SSH host key checking: currently uses `StrictHostKeyChecking=accept-new` (TOFU); consider pinning GitHub host keys / `known_hosts` in a Sprite base image.

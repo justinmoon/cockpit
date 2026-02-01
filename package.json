@@ -1,0 +1,20 @@
+{
+  "name": "cockpit",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "cockpit": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && chmod +x dist/cli.js",
+    "start": "node --enable-source-maps dist/cli.js"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

@@ -1,1 +1,2 @@
 - SSH host key checking: currently uses `StrictHostKeyChecking=accept-new` (TOFU); consider pinning GitHub host keys / `known_hosts` in a Sprite base image.
+- Custom environments via nix-built tarballs like https://github.com/justinmoon/cook

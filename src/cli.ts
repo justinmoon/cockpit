@@ -16,6 +16,35 @@ type RunOpts = {
 
 let tmpCounter = 0;
 
+function isInTmux(): boolean {
+  return !!process.env.TMUX;
+}
+
+async function getTmuxWindowSprite(): Promise<string | null> {
+  if (!isInTmux()) return null;
+  // Use tmux window option instead of environment variable (broader tmux version support)
+  const res = await spawnPromise("tmux", ["show-option", "-wqv", "@cockpit_sprite"], {
+    stdio: "pipe",
+  });
+  if (res.code !== 0) return null;
+  const value = res.stdout.trim();
+  return value || null;
+}
+
+async function setTmuxWindowSprite(spriteName: string): Promise<void> {
+  if (!isInTmux()) return;
+  await spawnPromise("tmux", ["set-option", "-w", "@cockpit_sprite", spriteName], {
+    stdio: "inherit",
+  });
+}
+
+async function clearTmuxWindowSprite(): Promise<void> {
+  if (!isInTmux()) return;
+  await spawnPromise("tmux", ["set-option", "-wu", "@cockpit_sprite"], {
+    stdio: "inherit",
+  });
+}
+
 async function warnIfDistLooksStale() {
   try {
     const here = path.dirname(fileURLToPath(import.meta.url));
@@ -33,7 +62,10 @@ async function warnIfDistLooksStale() {
 
 function parseArgs(argv: string[]) {
   const flags = new Set(argv.filter((a) => a.startsWith("-")));
+  const positional = argv.filter((a) => !a.startsWith("-"));
+  const subcommand = positional[0] || "create"; // default to create
   return {
+    subcommand,
     help: flags.has("--help") || flags.has("-h"),
     dryRun: flags.has("--dry-run"),
     qa: flags.has("--qa"),
@@ -270,40 +302,94 @@ async function uploadAndExtractTarball(
   );
 }
 
-async function main() {
-  await warnIfDistLooksStale();
-
-  const args = parseArgs(process.argv.slice(2));
-  if (args.help) {
-    // eslint-disable-next-line no-console
-    console.log(
-      [
-        "cockpit - run pi inside a Fly Sprite",
-        "",
-        "Usage:",
-        "  cockpit",
-        "",
-        "Env:",
-        "  COCKPIT_REPO_URL        Repo URL to clone (default: current dir origin remote)",
-        "  COCKPIT_BRANCH         Branch to checkout (default: master)",
-        "  COCKPIT_SPRITE_ORG      Fly org name (optional)",
-        "",
-        "Debug:",
-        "  cockpit --dry-run       Print commands without running them",
-        "  cockpit --qa            Provision + sanity-check, then exit",
-        "  cockpit --qa-turn       Run 1 pi turn (costs tokens), then exit",
-      ].join("\n"),
-    );
+async function attachToSprite(spriteName: string, spriteCmd: string, org: string | undefined, dryRun: boolean) {
+  const remoteWorkDir = "/home/sprite/workspace";
+  
+  const shellArgs = [
+    ...spriteScopedArgs(spriteName, org),
+    "exec",
+    "-tty",
+    "-dir",
+    remoteWorkDir,
+    "/bin/sh",
+    "-c",
+    'export PATH="$(npm prefix -g)/bin:$PATH"; if command -v bash >/dev/null 2>&1; then exec bash -l; fi; exec sh',
+  ];
+  
+  if (dryRun) {
+    await runOk(spriteCmd, shellArgs, { stdio: "inherit", dryRun });
     return;
   }
 
-  const dryRun = args.dryRun || process.env.COCKPIT_DRY_RUN === "1";
-  const qa = args.qa || process.env.COCKPIT_QA === "1";
-  const qaTurn = args.qaTurn || process.env.COCKPIT_QA_TURN === "1";
+  const child = spawn(spriteCmd, shellArgs, { stdio: "inherit" });
+  const exitCode: number = await new Promise((resolve) =>
+    child.on("close", (code) => resolve(code ?? 0)),
+  );
+
+  if (exitCode !== 0) {
+    throw new Error(`shell exited with code ${exitCode}`);
+  }
+}
+
+async function cmdAttach(dryRun: boolean) {
+  if (!isInTmux()) {
+    throw new Error("cockpit attach requires tmux. Run inside a tmux session.");
+  }
+
+  const spriteName = await getTmuxWindowSprite();
+  if (!spriteName) {
+    throw new Error("No Sprite for this tmux window. Run `cockpit` first to create one.");
+  }
+
+  const org = process.env.COCKPIT_SPRITE_ORG;
+  const spriteCmd = process.env.SPRITE_BIN?.trim() || "sprite";
+
+  // eslint-disable-next-line no-console
+  console.log(`Attaching to Sprite: ${spriteName}`);
+  await attachToSprite(spriteName, spriteCmd, org, dryRun);
+}
+
+async function cmdDestroy(dryRun: boolean) {
+  if (!isInTmux()) {
+    throw new Error("cockpit destroy requires tmux. Run inside a tmux session.");
+  }
+
+  const spriteName = await getTmuxWindowSprite();
+  if (!spriteName) {
+    throw new Error("No Sprite for this tmux window.");
+  }
+
+  const org = process.env.COCKPIT_SPRITE_ORG;
+  const spriteCmd = process.env.SPRITE_BIN?.trim() || "sprite";
+
+  // eslint-disable-next-line no-console
+  console.log(`Destroying Sprite: ${spriteName}`);
+  await runOk(spriteCmd, [...spriteScopedArgs(spriteName, org), "destroy", "-force"], {
+    stdio: "inherit",
+    dryRun,
+    allowFailure: true,
+  });
+
+  await clearTmuxWindowSprite();
+  // eslint-disable-next-line no-console
+  console.log("Sprite destroyed and tmux window unbound.");
+}
+
+async function cmdCreate(dryRun: boolean, qa: boolean, qaTurn: boolean) {
   const org = process.env.COCKPIT_SPRITE_ORG;
   const branch = process.env.COCKPIT_BRANCH?.trim() || "master";
-
   const spriteCmd = process.env.SPRITE_BIN?.trim() || "sprite";
+
+  // In tmux, check if window already has a Sprite
+  if (isInTmux()) {
+    const existingSprite = await getTmuxWindowSprite();
+    if (existingSprite) {
+      throw new Error(
+        `This tmux window already has Sprite "${existingSprite}".\n` +
+        `Use \`cockpit attach\` to connect, or \`cockpit destroy\` first.`
+      );
+    }
+  }
 
   let repoUrl = process.env.COCKPIT_REPO_URL?.trim() || "";
   if (!repoUrl) {
@@ -346,37 +432,37 @@ async function main() {
     }
   }
 
-  let activeChild: ReturnType<typeof spawn> | null = null;
+  // If in tmux, bind this Sprite to the window
+  if (isInTmux()) {
+    await setTmuxWindowSprite(spriteName);
+    // eslint-disable-next-line no-console
+    console.log(`Bound Sprite "${spriteName}" to this tmux window.`);
+  }
+
+  // For QA modes and non-tmux, we still auto-cleanup on exit
+  const shouldAutoCleanup = qa || qaTurn || !isInTmux();
+  
   let cleaningUp = false;
 
   const cleanup = async () => {
     if (cleaningUp) return;
     cleaningUp = true;
-    if (activeChild && !activeChild.killed) {
-      try {
-        activeChild.kill("SIGTERM");
-      } catch {
-        // ignore
+    if (shouldAutoCleanup) {
+      await runOk(spriteCmd, [...spriteScopedArgs(spriteName, org), "destroy", "-force"], {
+        stdio: "inherit",
+        dryRun,
+        allowFailure: true,
+      });
+      if (isInTmux()) {
+        await clearTmuxWindowSprite();
       }
     }
-    await runOk(spriteCmd, [...spriteScopedArgs(spriteName, org), "destroy", "-force"], {
-      stdio: "inherit",
-      dryRun,
-      allowFailure: true,
-    });
   };
 
-  const handleSignal = (sig: NodeJS.Signals) => {
+  const handleSignal = (_sig: NodeJS.Signals) => {
     void (async () => {
-      if (activeChild && !activeChild.killed) {
-        try {
-          activeChild.kill(sig);
-        } catch {
-          // ignore
-        }
-      }
       await cleanup();
-      process.exit(128 + (sig === "SIGINT" ? 2 : 15));
+      process.exit(130); // 128 + SIGINT
     })();
   };
 
@@ -516,31 +602,67 @@ echo "QA TURN OK"
     }
 
     // Drop into a shell in a TTY inside the sprite.
-    const shellArgs = [
-      ...spriteScopedArgs(spriteName, org),
-      "exec",
-      "-tty",
-      "-dir",
-      remoteWorkDir,
-      "/bin/sh",
-      "-c",
-      'export PATH="$(npm prefix -g)/bin:$PATH"; if command -v bash >/dev/null 2>&1; then exec bash -l; fi; exec sh',
-    ];
-    if (dryRun) {
-      await runOk(spriteCmd, shellArgs, { stdio: "inherit", dryRun });
-      return;
-    }
-
-    activeChild = spawn(spriteCmd, shellArgs, { stdio: "inherit" });
-    const exitCode: number = await new Promise((resolve) =>
-      activeChild!.on("close", (code) => resolve(code ?? 0)),
-    );
-
-    if (exitCode !== 0) {
-      throw new Error(`shell exited with code ${exitCode}`);
-    }
+    await attachToSprite(spriteName, spriteCmd, org, dryRun);
   } finally {
     await cleanup();
+  }
+}
+
+async function main() {
+  await warnIfDistLooksStale();
+
+  const args = parseArgs(process.argv.slice(2));
+  if (args.help) {
+    // eslint-disable-next-line no-console
+    console.log(
+      [
+        "cockpit - run pi inside a Fly Sprite",
+        "",
+        "Usage:",
+        "  cockpit              Create a new Sprite and attach (claims tmux window)",
+        "  cockpit attach       Attach to this tmux window's Sprite",
+        "  cockpit destroy      Destroy this tmux window's Sprite",
+        "",
+        "Env:",
+        "  COCKPIT_REPO_URL     Repo URL to clone (default: current dir origin remote)",
+        "  COCKPIT_BRANCH       Branch to checkout (default: master)",
+        "  COCKPIT_SPRITE_ORG   Fly org name (optional)",
+        "",
+        "tmux Integration:",
+        "  In tmux, `cockpit` binds the Sprite to the current window.",
+        "  New panes can auto-attach via shell hook. Add to fish config:",
+        "",
+        "    if set -q TMUX",
+        "        set -l sprite (tmux show-option -wqv @cockpit_sprite 2>/dev/null)",
+        "        if test -n \"$sprite\"",
+        "            cockpit attach",
+        "        end",
+        "    end",
+        "",
+        "Debug:",
+        "  cockpit --dry-run    Print commands without running them",
+        "  cockpit --qa         Provision + sanity-check, then exit",
+        "  cockpit --qa-turn    Run 1 pi turn (costs tokens), then exit",
+      ].join("\n"),
+    );
+    return;
+  }
+
+  const dryRun = args.dryRun || process.env.COCKPIT_DRY_RUN === "1";
+  const qa = args.qa || process.env.COCKPIT_QA === "1";
+  const qaTurn = args.qaTurn || process.env.COCKPIT_QA_TURN === "1";
+
+  switch (args.subcommand) {
+    case "attach":
+      await cmdAttach(dryRun);
+      break;
+    case "destroy":
+      await cmdDestroy(dryRun);
+      break;
+    case "create":
+    default:
+      await cmdCreate(dryRun, qa, qaTurn);
+      break;
   }
 }
 

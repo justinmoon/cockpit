@@ -1,4 +1,4 @@
-# @mariozechner/pi-web-server
+# Cockpit Web Dashboard
 
 Web dashboard for managing multiple pi coding agent sessions (sprites).
 
@@ -15,10 +15,8 @@ Built with [Bun](https://bun.sh) + [Elysia](https://elysiajs.com) for fast SSR.
 ## Quick Start
 
 ```bash
-# From the pi-mono root
-cd packages/web-server
 bun install
-bun run dev
+bun run web
 ```
 
 Open http://localhost:3000 to see the dashboard.
@@ -27,19 +25,19 @@ Open http://localhost:3000 to see the dashboard.
 
 ```bash
 # Start dashboard on default port (3000)
-bun run src/cli.ts
+bun run src/web/cli.ts
 
 # Custom port
-bun run src/cli.ts --port 8080
+bun run src/web/cli.ts --port 8080
 
 # Bind to specific host
-bun run src/cli.ts --host 127.0.0.1
+bun run src/web/cli.ts --host 127.0.0.1
 
 # Persist sprite data to disk
-bun run src/cli.ts --data-dir ~/.pi/web-server
+bun run src/web/cli.ts --data-dir ~/.pi/web-server
 
 # Show help
-bun run src/cli.ts --help
+bun run src/web/cli.ts --help
 ```
 
 ## Workspace Directory
@@ -190,14 +188,11 @@ WS /api/sprites/:id/ws
 ## Development
 
 ```bash
-# Watch mode with auto-restart
-bun run dev
-
 # Type check
-bun run typecheck
+bun run check
 
 # Run QA tests
-bun test/qa.ts
+bun test/web/qa.ts
 ```
 
 ## Deployment
@@ -205,15 +200,13 @@ bun test/qa.ts
 ### On Hetzner/Homelab (via Tailscale)
 
 ```bash
-# Install on server
-git clone https://github.com/badlogic/pi-mono
-cd pi-mono
-npm install
-npm run build
+# Install
+git clone <this-repo>
+cd cockpit
+bun install
 
 # Run dashboard
-cd packages/web-server
-bun run src/cli.ts --port 3000 --data-dir ~/.pi/web-server
+bun run src/web/cli.ts --port 3000 --data-dir ~/.pi/web-server
 ```
 
 Access via `http://<tailscale-ip>:3000` from any device on your Tailscale network.
@@ -228,8 +221,8 @@ After=network.target
 [Service]
 Type=simple
 User=youruser
-WorkingDirectory=/path/to/pi-mono/packages/web-server
-ExecStart=/usr/local/bin/bun run src/cli.ts --port 3000 --data-dir /home/youruser/.pi/web-server
+WorkingDirectory=/path/to/cockpit
+ExecStart=/usr/local/bin/bun run src/web/cli.ts --port 3000 --data-dir /home/youruser/.pi/web-server
 Restart=always
 
 [Install]
@@ -240,10 +233,12 @@ WantedBy=multi-user.target
 
 ```
 src/
-├── cli.ts           # CLI entry point
-├── index.ts         # Elysia server with routes
-├── templates.ts     # Dashboard HTML templates
-├── sprites.ts       # Sprite store (memory/file)
+├── cli.ts              # CLI entry point (Sprite helper)
+└── web/
+    ├── cli.ts          # Web dashboard entry point
+    ├── index.ts        # Elysia server with routes
+    ├── templates.ts    # Dashboard HTML templates
+    ├── sprites.ts      # Sprite store (memory/file)
 ├── agent-bridge.ts  # WebSocket ↔ Agent session
 └── agent-ui.ts      # Enhanced chat UI template
 ```

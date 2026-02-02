@@ -16,8 +16,8 @@ These tests exercise the full flow:
 
 ```bash
 # On your Mac (or any machine with Playwright deps)
-cd packages/web-server
-npx playwright install --with-deps
+cd cockpit
+bunx playwright install --with-deps
 
 # Ensure proxy is running
 sprite proxy 3000 -s <sprite-name>
@@ -26,7 +26,7 @@ sprite proxy 3000 -s <sprite-name>
 PI_WEB_BASE_URL=http://localhost:3000 \
 PI_TEST_REPO=https://github.com/badlogic/pi-mono \
 PI_TEST_BRANCH=main \
-npx playwright test
+bunx playwright test
 ```
 
 ## Notes

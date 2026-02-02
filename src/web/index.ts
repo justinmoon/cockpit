@@ -10,11 +10,11 @@ import path from "node:path";
 import { mkdir } from "node:fs/promises";
 import { html } from "@elysiajs/html";
 import { Elysia } from "elysia";
-import { type ClientMessage, handleAgentClose, handleClientMessage, setupAgentWebSocket } from "./agent-bridge.js";
-import { agentUIPage } from "./agent-ui.js";
-import { error, log, warn } from "./logger.js";
-import { createSpriteStore, type SpriteStore } from "./sprites.js";
-import { agentPage, dashboardPage, errorPage, newSpritePage, type SpriteInfo } from "./templates.js";
+import { type ClientMessage, handleAgentClose, handleClientMessage, setupAgentWebSocket } from "./agent-bridge";
+import { agentUIPage } from "./agent-ui";
+import { error, log, warn } from "./logger";
+import { createSpriteStore, type SpriteStore } from "./sprites";
+import { agentPage, dashboardPage, errorPage, newSpritePage, type SpriteInfo } from "./templates";
 
 export interface ServerConfig {
 	port: number;
@@ -214,11 +214,11 @@ export function createDashboardServer(config: ServerConfig) {
 				// Store on ws.data for later retrieval
 				(ws.data as any).spriteId = spriteId;
 				log(`ws open sprite=${spriteId}`);
-				store.get(spriteId).then((sprite) => {
-					if (sprite) {
-						setupAgentWebSocket(ws as any, sprite);
-						store.updateStatus(spriteId, "working");
-					} else {
+					store.get(spriteId).then((sprite: SpriteInfo | null) => {
+						if (sprite) {
+							setupAgentWebSocket(ws as any, sprite);
+							store.updateStatus(spriteId, "working");
+						} else {
 						ws.send(JSON.stringify({ type: "error", message: "Sprite not found" }));
 						ws.close();
 					}
@@ -261,10 +261,10 @@ export function createDashboardServer(config: ServerConfig) {
 
 				log(`ws message sprite=${spriteId} type=${parsed.type}`);
 
-				void handleClientMessage(spriteId, parsed, (msg) => {
-					ws.send(JSON.stringify({ type: "error", message: msg }));
-				});
-			},
+					void handleClientMessage(spriteId, parsed, (msg: string) => {
+						ws.send(JSON.stringify({ type: "error", message: msg }));
+					});
+				},
 			close(ws) {
 				const spriteId = (ws.data as any).spriteId || (ws.data as any).params?.id;
 				if (spriteId) {

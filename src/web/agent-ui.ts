@@ -10,7 +10,7 @@
  * - Auto-scroll with user override
  */
 
-import type { SpriteInfo } from "./templates.js";
+import type { SpriteInfo } from "./templates";
 
 export function agentUIPage(sprite: SpriteInfo): string {
 	return `<!DOCTYPE html>

@@ -3,13 +3,13 @@
  * Pi Web Server CLI
  *
  * Usage:
- *   pi-web                     # Start dashboard on default port
- *   pi-web --port 8080         # Custom port
- *   pi-web --data-dir ./data   # Persist sprite data to directory
+ *   cockpit-web                     # Start dashboard on default port
+ *   cockpit-web --port 8080         # Custom port
+ *   cockpit-web --data-dir ./data   # Persist sprite data to directory
  */
 
 import { parseArgs } from "util";
-import { createDashboardServer } from "./index.js";
+import { createDashboardServer } from "./index";
 
 const { values } = parseArgs({
 	args: Bun.argv.slice(2),
@@ -37,10 +37,10 @@ const { values } = parseArgs({
 
 if (values.help) {
 	console.log(`
-Pi Web Server - Dashboard for managing coding agent sprites
+Cockpit Web - Dashboard for managing coding agent sprites
 
 Usage:
-  pi-web [options]
+  cockpit-web [options]
 
 Options:
   -p, --port <port>       Port to listen on (default: 3000)
@@ -49,9 +49,9 @@ Options:
       --help              Show this help message
 
 Examples:
-  pi-web                          # Start on http://0.0.0.0:3000
-  pi-web -p 8080                  # Start on port 8080
-  pi-web -d ~/.pi/web-server      # Persist sprite data
+  cockpit-web                     # Start on http://0.0.0.0:3000
+  cockpit-web -p 8080             # Start on port 8080
+  cockpit-web -d ~/.pi/web-server # Persist sprite data
 
 The dashboard lets you manage multiple pi coding agent sessions (sprites).
 Each sprite can be:

@@ -1,0 +1,23 @@
+name: pre-merge
+
+on:
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v4
+      - uses: useblacksmith/stickydisk@v1
+        with:
+          key: ${{ github.repository }}-nix-${{ runner.os }}
+          path: /nix
+      - run: |
+          if [ -d /nix ] && [ "$(stat -c %u /nix)" != "$(id -u)" ]; then
+            sudo chown -R $(id -u):$(id -g) /nix
+          fi
+      - uses: nixbuild/nix-quick-install-action@v30
+      - run: nix develop -c just pre-merge
+

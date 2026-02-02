@@ -3,7 +3,7 @@ import { defineConfig } from "@playwright/test";
 const baseURL = process.env.PI_WEB_BASE_URL || "http://localhost:3000";
 
 export default defineConfig({
-	testDir: "./test/e2e",
+	testDir: "./test/web/e2e",
 	fullyParallel: false,
 	timeout: 300_000,
 	expect: {

@@ -6,8 +6,8 @@
  */
 
 import { type AgentSession, codingTools, createAgentSession, SessionManager } from "@mariozechner/pi-coding-agent";
-import { log } from "./logger.js";
-import type { SpriteInfo } from "./templates.js";
+import { log } from "./logger";
+import type { SpriteInfo } from "./templates";
 
 export interface AgentConnection {
 	session: AgentSession;

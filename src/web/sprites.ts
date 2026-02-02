@@ -5,7 +5,7 @@
  * agents in-process or connect to remote sprites.
  */
 
-import type { SpriteInfo } from "./templates.js";
+import type { SpriteInfo } from "./templates";
 
 export interface SpriteConfig {
 	id: string;

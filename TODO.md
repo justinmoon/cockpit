@@ -1,2 +1,3 @@
 - SSH host key checking: currently uses `StrictHostKeyChecking=accept-new` (TOFU); consider pinning GitHub host keys / `known_hosts` in a Sprite base image.
 - Custom environments via nix-built tarballs like https://github.com/justinmoon/cook
+- clone ~/configs into the environment so GLOBAL-AGENTS.md works ... or at least just that one file ... maybe we can just support like a `.js` script that can be run and do whatever is needed to copy stuff into our new env ...

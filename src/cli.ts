@@ -1,11 +1,10 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import readline from "node:readline/promises";
-import { fileURLToPath } from "node:url";
 
 type RunOpts = {
   cwd?: string;
@@ -50,21 +49,6 @@ async function clearTmuxWindowSprite(dryRun: boolean): Promise<void> {
   });
   if (res.code !== 0) {
     throw new Error(`tmux set-option -u failed (${res.code})`);
-  }
-}
-
-async function warnIfDistLooksStale() {
-  try {
-    const here = path.dirname(fileURLToPath(import.meta.url));
-    const distPath = path.join(here, "cli.js");
-    const srcPath = path.join(here, "..", "src", "cli.ts");
-    const [distStat, srcStat] = await Promise.all([fs.stat(distPath), fs.stat(srcPath)]);
-    if (srcStat.mtimeMs > distStat.mtimeMs + 1000) {
-      // eslint-disable-next-line no-console
-      console.log("Note: `src/cli.ts` is newer than `dist/cli.js`. Run `npm run build` to rebuild.");
-    }
-  } catch {
-    // ignore (likely running from installed package without src/)
   }
 }
 
@@ -220,8 +204,7 @@ async function probeSpriteExistence(
 }
 
 function remoteBootstrapScript() {
-  // Sprite already includes node/npm. Keep setup minimal.
-  // Key gotcha: `npm install -g` installs into `$(npm prefix -g)/bin`, which is NOT on PATH by default.
+  // Sprite should have node. Ensure a real Bun install exists under $HOME/.bun (Sprites may ship a bun wrapper).
   return String.raw`
 set -eu
 
@@ -229,24 +212,43 @@ if ! command -v node >/dev/null 2>&1; then
   echo "Missing node in Sprite environment" >&2
   exit 1
 fi
-if ! command -v npm >/dev/null 2>&1; then
-  echo "Missing npm in Sprite environment" >&2
-  exit 1
-fi
 
 node -v
-npm -v
 
 if [ "$(node -p 'Number(process.versions.node.split(".")[0])' 2>/dev/null || echo 0)" -lt 20 ]; then
   echo "Node too old; need >= 20" >&2
   exit 1
 fi
 
-npm config set fund false >/dev/null 2>&1 || true
-npm config set audit false >/dev/null 2>&1 || true
-npm install -g @mariozechner/pi-coding-agent >/tmp/cockpit-npm-install.log 2>&1 || (cat /tmp/cockpit-npm-install.log >&2; exit 1)
+export BUN_INSTALL="$HOME/.bun"
+if [ ! -x "$BUN_INSTALL/bin/bun" ]; then
+  if command -v curl >/dev/null 2>&1; then
+    if command -v bash >/dev/null 2>&1; then
+      curl -fsSL https://bun.sh/install | bash
+    else
+      curl -fsSL https://bun.sh/install | sh
+    fi
+  elif command -v wget >/dev/null 2>&1; then
+    if command -v bash >/dev/null 2>&1; then
+      wget -qO- https://bun.sh/install | bash
+    else
+      wget -qO- https://bun.sh/install | sh
+    fi
+  else
+    echo "Missing curl/wget to install Bun in Sprite environment" >&2
+    exit 1
+  fi
+fi
 
-export PATH="$(npm prefix -g)/bin:$PATH"
+if [ ! -x "$BUN_INSTALL/bin/bun" ]; then
+  echo "Bun install failed (missing $BUN_INSTALL/bin/bun)" >&2
+  exit 1
+fi
+
+export PATH="$BUN_INSTALL/bin:$PATH"
+
+"$BUN_INSTALL/bin/bun" -v
+"$BUN_INSTALL/bin/bun" add -g @mariozechner/pi-coding-agent >/tmp/cockpit-bun-add.log 2>&1 || (cat /tmp/cockpit-bun-add.log >&2; exit 1)
 pi --version
 `;
 }
@@ -360,7 +362,7 @@ async function attachToSprite(
     remoteWorkDir,
     "/bin/sh",
     "-c",
-    `if [ -f "$HOME/.ssh/cockpit_github_ed25519" ]; then export GIT_SSH_COMMAND='${cockpitGitSshCommand.replaceAll("'", "'\\''")}'; fi; export PATH="$(npm prefix -g)/bin:$PATH"; if command -v bash >/dev/null 2>&1; then exec bash -l; fi; exec sh`,
+    `if [ -f "$HOME/.ssh/cockpit_github_ed25519" ]; then export GIT_SSH_COMMAND='${cockpitGitSshCommand.replaceAll("'", "'\\''")}'; fi; export BUN_INSTALL="$HOME/.bun"; export PATH="$BUN_INSTALL/bin:$PATH"; if command -v bash >/dev/null 2>&1; then exec bash -l; fi; exec sh`,
   ];
   
   if (dryRun) {
@@ -742,7 +744,7 @@ async function cmdCreate(dryRun: boolean, qa: boolean, qaTurn: boolean) {
         "exec",
         "/bin/sh",
         "-c",
-        `cd '${remoteWorkDir.replaceAll("'", "'\\''")}' && export PATH="$(npm prefix -g)/bin:$PATH" && command -v pi && pi --version && test -d .git`,
+        `cd '${remoteWorkDir.replaceAll("'", "'\\''")}' && export BUN_INSTALL="$HOME/.bun" && export PATH="$BUN_INSTALL/bin:$PATH" && command -v pi && pi --version && test -d .git`,
       ],
       { stdio: "inherit", dryRun },
     );
@@ -753,7 +755,8 @@ async function cmdCreate(dryRun: boolean, qa: boolean, qaTurn: boolean) {
       const qaTurnScript = `
 set -eu
 cd '${remoteWorkDir.replaceAll("'", "'\\''")}'
-export PATH="$(npm prefix -g)/bin:$PATH"
+export BUN_INSTALL="$HOME/.bun"
+export PATH="$BUN_INSTALL/bin:$PATH"
 rm -f answer.txt
 pi --print --no-session "Use the write tool to create a file named answer.txt in the current directory with exactly the text 42 and a trailing newline." || true
 if [ ! -f answer.txt ]; then
@@ -785,7 +788,7 @@ echo "QA TURN OK"
           "exec",
           "/bin/sh",
           "-c",
-          `cd '${remoteWorkDir.replaceAll("'", "'\\''")}' && export PATH="$(npm prefix -g)/bin:$PATH" && pi --help >/dev/null`,
+          `cd '${remoteWorkDir.replaceAll("'", "'\\''")}' && export BUN_INSTALL="$HOME/.bun" && export PATH="$BUN_INSTALL/bin:$PATH" && pi --help >/dev/null`,
         ],
         { stdio: "inherit", dryRun },
       );
@@ -810,8 +813,6 @@ echo "QA TURN OK"
 }
 
 async function main() {
-  await warnIfDistLooksStale();
-
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
     // eslint-disable-next-line no-console

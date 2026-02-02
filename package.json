@@ -4,17 +4,29 @@
   "private": true,
   "type": "module",
   "bin": {
-    "cockpit": "dist/cli.js"
+    "cockpit": "src/cli.ts",
+    "cockpit-web": "src/web/cli.ts"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && chmod +x dist/cli.js",
-    "start": "node --enable-source-maps dist/cli.js"
+    "cli": "bun run src/cli.ts",
+    "web": "bun run src/web/cli.ts",
+    "check": "bunx tsc --noEmit",
+    "test:e2e": "bunx playwright test"
+  },
+  "dependencies": {
+    "@elysiajs/html": "^1.1.1",
+    "@mariozechner/pi-coding-agent": "^0.51.0",
+    "elysia": "^1.2.25"
   },
   "devDependencies": {
+    "@playwright/test": "^1.58.1",
+    "@types/bun": "^1.2.5",
     "@types/node": "^24.3.0",
+    "playwright": "^1.58.1",
     "typescript": "^5.7.3"
   },
   "engines": {
+    "bun": ">=1.1.0",
     "node": ">=20.0.0"
   }
 }
